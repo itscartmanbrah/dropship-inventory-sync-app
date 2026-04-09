@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "shopify-inventory-sync-492105",
+  "private_key_id": "37828d374722523b1b8363feddc7a4bd992fba17",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCxAi6bmuZHDysl\naI9ViTp9q57pdzWm/Ja+296ZfVLFQqxP4CUc6TnpEimVNmK+Ey53shieJevgRoNS\nIBWlrK+F2RCacfaNeq0WShPtxlkrZRTqGjWWQ9n9n0gb+5oE5siJ3oms+EmWlMA+\njDqdaEbIlUNlwoPviklm+8Eub7P7pm4xyQ3L6x5DfFktGoafl/hf6uOAso59drGl\nSePJJFmi8gzURtrGpUKq02bdBzkioxK6DMA4LmGvZYcK5ZgHv59IFEmJqNOYNZKu\nwNYGyvnZWy59YCE31vmd2virRm8YSCPSMfTkqxo3MMKrBeiOasm8+nACea3j2Idp\nUAXMwyUdAgMBAAECggEAM/ghigMREBTmhI2t452uRB5iwkYDRRtNAQ1ZzjPK3Oql\n36++Bb5+B62S8uGsXQURtAfgjXIxzj+1p6OO530LbZ9c7hN+oWw+rFgkgL+nB4Qe\nf1shl5QlSP7+c2TMBBtkDoJ9ZoDhTiovRU3zmap3ecXFK3fQN8Cgq3FH9yPJspzd\n+39banWePpjA0umlKXBmQze+X/JQ6L+O3vWwVkgs/8AaHyBixpeEpde2ZcMNT40B\n3jpHEdApysuevjhneXJ6M7f8Ju/X9uTFB/JC9o3YD1I9Y1ZXyro6g7lgPeN89gP8\nrq03g4zS9vfHtOgxlVCd9xoYTx+9DbnPlJTmGE9nSwKBgQDgP0i5GBxfyTnZW/Uk\nMZCacc+0z/hMZAT97n5Vt569sxPJ/JJ88exIfUFgB+O4Lm9ysQNnuyyI/uEapxjV\neb1H3q5pcHXSgrhreQgo35MOA43w28vt2oYlwnPYMP+PkaMyOMD5anr2gz1EpLHQ\nF9bN+p8VLREWyvcROOTOcw/OCwKBgQDKEowo5/lxP5EQWVofcmDpImLtE4gOKE/8\nk4mG7J1mj1yz7a8Bjq7xQlc5UuM3DWILvvs2VZHBBW9Vy00DdNgcWZ91lUH/8yxb\nAG7DllBwpw1W442gX+c4Il7zn9iNuQQg8ryA01SzQxeBZRrfab4935YRsFWwT1F0\nnS1mmv/adwKBgQCLhBP0xKFynrlVGDdOS2ASFtkJP5LVxCyu5+DF57XlhDK9qlxh\nTAqblwJDguUUxB8mlibuNK+ilCDs+iUjO9idjFeq1gMX86hVhTmkZGUThPacccNQ\nunJXr8FvMhzt78g/CLxW8P6LvF80A9t1Aj/saw7ql91X9vL8Tg9cuo2MvQKBgBk4\nv23LpoLQIFceD/Wk3Ru8QwS8T1sVBQbNk3jXx72pXzTGEfXrzUInuaNaCSox7W7x\n44EgpRSmjQL0YSRxTRgcx55xhs9flsW1BB49gMTO1QdnV6IQ1ldXUuqtpOXrlexW\n39hkiEnnseNgrz37gNdQNPb4P3nGLLCVfbk014J5AoGBAMrkkdytpKUMVzKhVuzx\n8uxyiaWIDsatA2Nd2q+YZwS5sHYGf29N0/yk1RpnldA66pph5FKrWRnGlZ7PL+AY\nlSN8Ae9JcsLwHYFsxLYbPzL/YE6WYkmYVqinETzKOmcj2ZtMYaEp47Mkmy3CXpi8\nZFos0xnsjyYEnDzF/BoxGFvD\n-----END PRIVATE KEY-----\n",
+  "client_email": "inventory-sync-bot@shopify-inventory-sync-492105.iam.gserviceaccount.com",
+  "client_id": "117800296742511760134",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/inventory-sync-bot%40shopify-inventory-sync-492105.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
