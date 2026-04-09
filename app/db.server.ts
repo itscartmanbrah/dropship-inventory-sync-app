@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { startScheduler } from "./services/scheduler.server";
 
 declare global {
   var prismaGlobal: PrismaClient;

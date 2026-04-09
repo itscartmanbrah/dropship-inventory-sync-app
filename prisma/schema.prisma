@@ -32,3 +32,26 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model Settings {
+  id                   String    @id @default(cuid())
+  shop                 String    @unique
+  googleSheetId        String?
+  googleServiceAccount String?
+  syncIntervalHours    Int?      @default(24)
+  lastSyncTime         DateTime?
+  isActive             Boolean   @default(false)
+  locationId           String?
+}
+
+model SyncRun {
+  id              String    @id @default(cuid())
+  shop            String
+  type            String    // MANUAL or AUTO
+  status          String    // IN_PROGRESS, COMPLETED, ERROR
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  totalItems      Int       @default(0)
+  processedItems  Int       @default(0)
+  errorMessage    String?
+}
