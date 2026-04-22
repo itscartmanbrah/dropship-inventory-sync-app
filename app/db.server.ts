@@ -13,4 +13,7 @@ if (process.env.NODE_ENV !== "production") {
 
 const prisma = global.prismaGlobal ?? new PrismaClient();
 
+// Start the scheduler exactly once
+startScheduler();
+
 export default prisma;

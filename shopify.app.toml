@@ -2,12 +2,11 @@
 
 client_id = "8f460aa43fc2d7cf7d329831ba5ff3bc"
 name = "dropship-inventory-sync"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://159-223-96-29.nip.io"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -25,4 +24,4 @@ api_version = "2026-07"
 scopes = "write_products,read_products,write_inventory,read_inventory,read_locations"
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = [ "https://159-223-96-29.nip.io/api/auth/callback", "https://159-223-96-29.nip.io/api/auth/offline" ]
