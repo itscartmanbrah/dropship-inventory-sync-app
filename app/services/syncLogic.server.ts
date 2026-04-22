@@ -2,6 +2,26 @@ import { unauthenticated } from '../shopify.server';
 import prisma from '../db.server';
 import { fetchSheetData } from './googleSheets.server';
 
+// Retry wrapper for Shopify GraphQL calls to handle transient 500/502 errors
+async function retryGraphql(admin: any, query: string, variables: any, maxRetries = 3): Promise<any> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await admin.graphql(query, variables);
+    } catch (err: any) {
+      const statusCode = err?.response?.code || err?.response?.statusCode;
+      const isTransient = statusCode === 500 || statusCode === 502 || statusCode === 503;
+      
+      if (isTransient && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+        console.warn(`Shopify API returned ${statusCode}, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 export async function runSyncForShop(shop: string, type: string = "MANUAL") {
   console.log(`Starting sync for shop: ${shop}`);
   
@@ -17,7 +37,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
   });
 
   const reportRows: string[] = [];
-  reportRows.push(["SKU", "Product Title", "Variant Title", "Barcode", "Quantity Processed"].map(s => `"${s}"`).join(","));
+  reportRows.push(["SKU", "Product Title", "Variant Title", "Barcode", "Qty Before", "Qty After"].map(s => `"${s}"`).join(","));
 
   try {
     // 1. Get settings
@@ -56,13 +76,14 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         inventoryItemId: string;
         productId: string;
         currentWarehouseQty: number;
+        isAtTargetLocation: boolean;
         sku: string;
         productTitle: string;
         variantTitle: string;
     }>();
 
     while (hasNextPage) {
-        const productsResponse = await admin.graphql(
+        const productsResponse = await retryGraphql(admin,
         `#graphql
         query getVariants($cursor: String) {
             productVariants(first: 250, after: $cursor) {
@@ -150,6 +171,9 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     const variantsToActivate = [];
     let processedItems = 0;
     
+    // Track unique product IDs that had inventory updated (for tagging)
+    const updatedProductIds = new Set<string>();
+
     for (const row of sheetRows) {
         const rawBarcode = row['Barcode'] || row['Variant Barcode'];
         const qtyStr = row['Variant Inventory Qty'] || row['Variant Inventory Quantity'];
@@ -165,6 +189,9 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 variantData.isAtTargetLocation = true; // prevent multi-adds if barcode duplicates
             }
 
+            // Capture the original qty before we overwrite it
+            const originalWarehouseQty = variantData.currentWarehouseQty;
+
             // Adjust the product's total projected inventory
             const productData = productTotalInventoryData.get(variantData.productId)!;
             productData.totalProjected = productData.totalProjected - variantData.currentWarehouseQty + quantity;
@@ -172,6 +199,9 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             // To prevent double subtraction if there are duplicate barcodes in sheet, we update currentWarehouseQty to new quantity
             // This ensures if the sheet has it twice, the second one just overrides normally.
             variantData.currentWarehouseQty = quantity;
+
+            // Track this product for tagging
+            updatedProductIds.add(variantData.productId);
 
             updateMutations.push({
                 inventoryItemId: variantData.inventoryItemId,
@@ -184,6 +214,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 variantData.productTitle,
                 variantData.variantTitle,
                 barcode,
+                originalWarehouseQty.toString(),
                 quantity.toString()
             ].map(s => `"${(s || "").replace(/"/g, '""')}"`).join(","));
         }
@@ -202,7 +233,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         console.log(`Activating ${variantsToActivate.length} unassigned items at location...`);
         for (const itemId of variantsToActivate) {
             try {
-                await admin.graphql(
+                await retryGraphql(admin,
                     `#graphql
                     mutation inventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
                       inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
@@ -231,7 +262,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             }));
 
             try {
-                const response = await admin.graphql(
+                const response = await retryGraphql(admin,
                     `#graphql
                     mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
                       inventorySetQuantities(input: $input) {
@@ -262,18 +293,13 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             // Avoid Shopify API rate limiting by waiting 2 seconds (100 points replenished)
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
-    } else {
-        await prisma.syncRun.update({
-            where: { id: syncRun.id },
-            data: { processedItems: sheetRows.length }
-        });
     }
 
     // 8. Put products to archive
     if (productsToArchive.length > 0) {
         console.log(`Archiving ${productsToArchive.length} products...`);
         for (const productId of productsToArchive) {
-            const pResponse = await admin.graphql(
+            const pResponse = await retryGraphql(admin,
                 `#graphql
                 mutation productUpdate($input: ProductInput!) {
                     productUpdate(input: $input) {
@@ -299,6 +325,45 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         }
     }
 
+    // 9. Tag updated products with "Dropship Inventory Updated"
+    if (updatedProductIds.size > 0) {
+        console.log(`Tagging ${updatedProductIds.size} updated products...`);
+        for (const productId of updatedProductIds) {
+            try {
+                // Fetch current tags for this product
+                const tagResponse = await retryGraphql(admin,
+                    `#graphql
+                    query getProductTags($id: ID!) {
+                        product(id: $id) {
+                            tags
+                        }
+                    }`,
+                    { variables: { id: productId } }
+                );
+                const tagData = await tagResponse.json();
+                const currentTags: string[] = tagData.data?.product?.tags || [];
+
+                // Only add the tag if it's not already present
+                if (!currentTags.includes("Dropship Inventory Updated")) {
+                    const newTags = [...currentTags, "Dropship Inventory Updated"];
+                    await retryGraphql(admin,
+                        `#graphql
+                        mutation productUpdate($input: ProductInput!) {
+                            productUpdate(input: $input) {
+                                userErrors { field message }
+                            }
+                        }`,
+                        { variables: { input: { id: productId, tags: newTags } } }
+                    );
+                }
+            } catch (err: any) {
+                console.error(`Warning: Failed to tag product ${productId}:`, err?.message);
+            }
+            // Throttle to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
+
     // Finish
     const csvContent = reportRows.join("\n");
     await prisma.syncRun.update({
@@ -306,7 +371,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         data: {
              status: "COMPLETED",
              completedAt: new Date(),
-             processedItems: sheetRows.length, // Final set
+             processedItems: updateMutations.length,
              reportData: csvContent
         }
     });
