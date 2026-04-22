@@ -39,7 +39,7 @@ export function startScheduler() {
 
         if (shouldSync) {
           try {
-            await runSyncForShop(settings.shop);
+            await runSyncForShop(settings.shop, "AUTO");
           } catch (e) {
             console.error(`Failed scheduled sync for shop ${settings.shop}`, e);
           }
