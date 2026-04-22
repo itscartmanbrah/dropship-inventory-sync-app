@@ -113,6 +113,7 @@ export default function Index() {
   const [intervalOption, setIntervalOption] = useState((settings?.syncIntervalHours || 24).toString());
   const [locationId, setLocationId] = useState(settings?.locationId || (locations[0]?.value ?? ""));
   const [isActive, setIsActive] = useState(settings?.isActive || false);
+  const [isEditingServiceAccount, setIsEditingServiceAccount] = useState(!settings?.googleServiceAccount);
 
   const [activeRun, setActiveRun] = useState<any>(syncRuns[0] || null);
 
@@ -138,6 +139,30 @@ export default function Index() {
     submit(formData, { method: "post" });
   };
 
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const handleDownloadCsv = async (id: string) => {
+    try {
+      setDownloadingId(id);
+      const response = await fetch(`/app/api/syncReport/${id}`);
+      if (!response.ok) throw new Error("Failed to download report");
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.style.display = "none";
+      a.href = url;
+      a.download = `sync_report_${id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const rowMarkup = syncRuns.map(
       ({ id, type, status, startedAt, processedItems }: any, index: number) => (
           <IndexTable.Row id={id} key={id} position={index}>
@@ -149,6 +174,17 @@ export default function Index() {
                  </Badge>
              </IndexTable.Cell>
              <IndexTable.Cell>{processedItems}</IndexTable.Cell>
+             <IndexTable.Cell>
+                 {(status === "COMPLETED" || status === "ERROR") && (
+                     <Button 
+                        size="micro" 
+                        loading={downloadingId === id} 
+                        onClick={() => handleDownloadCsv(id)}
+                     >
+                         Download CSV
+                     </Button>
+                 )}
+             </IndexTable.Cell>
           </IndexTable.Row>
       )
   );
@@ -180,15 +216,32 @@ export default function Index() {
                     helpText="The long ID in your Google Sheet URL (after /d/ and before /edit)"
                   />
 
-                  <TextField
-                    label="Google Service Account JSON"
-                    name="googleServiceAccount"
-                    value={serviceJson}
-                    onChange={setServiceJson}
-                    multiline={4}
-                    autoComplete="off"
-                    helpText="Paste the entire contents of the JSON file you downloaded"
-                  />
+                  <BlockStack gap="200">
+                    <Text as="h3" variant="headingSm">Google Service Account JSON</Text>
+                    {serviceJson && !isEditingServiceAccount ? (
+                      <BlockStack gap="200" align="start">
+                        <Banner tone="success">Service Account JSON is securely configured.</Banner>
+                        <Button onClick={() => setIsEditingServiceAccount(true)}>Edit Service Account JSON</Button>
+                        <input type="hidden" name="googleServiceAccount" value={serviceJson} />
+                      </BlockStack>
+                    ) : (
+                      <BlockStack gap="200" align="start">
+                        <TextField
+                          label="JSON Content"
+                          labelHidden
+                          name="googleServiceAccount"
+                          value={serviceJson}
+                          onChange={setServiceJson}
+                          multiline={6}
+                          autoComplete="off"
+                          helpText="Paste the entire contents of the JSON file you downloaded."
+                        />
+                        {serviceJson && (
+                          <Button onClick={() => setIsEditingServiceAccount(false)}>Cancel Edit</Button>
+                        )}
+                      </BlockStack>
+                    )}
+                  </BlockStack>
                   
                   <Select
                     label="Target Inventory Location"
@@ -238,6 +291,7 @@ export default function Index() {
                           { title: 'Type' },
                           { title: 'Status' },
                           { title: 'Items Processed' },
+                          { title: 'Actions' },
                       ]}
                       selectable={false}
                   >

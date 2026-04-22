@@ -54,4 +54,5 @@ model SyncRun {
   totalItems      Int       @default(0)
   processedItems  Int       @default(0)
   errorMessage    String?
+  reportData      String?
 }

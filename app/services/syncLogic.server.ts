@@ -16,6 +16,9 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     }
   });
 
+  const reportRows: string[] = [];
+  reportRows.push(["SKU", "Product Title", "Variant Title", "Barcode", "Quantity Processed"].map(s => `"${s}"`).join(","));
+
   try {
     // 1. Get settings
     const settings = await prisma.settings.findUnique({
@@ -53,6 +56,9 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         inventoryItemId: string;
         productId: string;
         currentWarehouseQty: number;
+        sku: string;
+        productTitle: string;
+        variantTitle: string;
     }>();
 
     while (hasNextPage) {
@@ -67,9 +73,12 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             edges {
                 node {
                 id
+                sku
+                title
                 barcode
                 product {
                     id
+                    title
                 }
                 inventoryItem {
                     id
@@ -106,12 +115,14 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             const inventoryLevels = edge.node.inventoryItem?.inventoryLevels?.edges || [];
             let currentVariantTotal = 0;
             let currentVariantWarehouseQty = 0;
+            let isAtTargetLocation = false;
 
             for (const level of inventoryLevels) {
                 const qty = level.node.quantities?.find((q: any) => q.name === "available")?.quantity || 0;
                 currentVariantTotal += qty;
                 if (level.node.location.id === locationId) {
                     currentVariantWarehouseQty += qty;
+                    isAtTargetLocation = true;
                 }
             }
             
@@ -121,7 +132,11 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 variantDataByBarcode.set(edge.node.barcode, {
                     inventoryItemId: edge.node.inventoryItem.id,
                     productId,
-                    currentWarehouseQty: currentVariantWarehouseQty
+                    currentWarehouseQty: currentVariantWarehouseQty,
+                    isAtTargetLocation,
+                    sku: edge.node.sku || "",
+                    productTitle: edge.node.product.title || "",
+                    variantTitle: edge.node.title || "",
                 });
             }
         }
@@ -132,17 +147,24 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
 
     // 6. Process items from Google Sheet
     const updateMutations = [];
+    const variantsToActivate = [];
     let processedItems = 0;
     
     for (const row of sheetRows) {
-        const barcode = row['Barcode'] || row['Variant Barcode'];
+        const rawBarcode = row['Barcode'] || row['Variant Barcode'];
         const qtyStr = row['Variant Inventory Qty'] || row['Variant Inventory Quantity'];
         const quantity = parseInt(qtyStr, 10) || 0;
         
-        if (!barcode) continue;
+        if (!rawBarcode) continue;
+        const barcode = String(rawBarcode).trim();
         
         const variantData = variantDataByBarcode.get(barcode);
         if (variantData) {
+            if (!variantData.isAtTargetLocation) {
+                variantsToActivate.push(variantData.inventoryItemId);
+                variantData.isAtTargetLocation = true; // prevent multi-adds if barcode duplicates
+            }
+
             // Adjust the product's total projected inventory
             const productData = productTotalInventoryData.get(variantData.productId)!;
             productData.totalProjected = productData.totalProjected - variantData.currentWarehouseQty + quantity;
@@ -156,6 +178,14 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 locationId,
                 quantity,
             });
+
+            reportRows.push([
+                variantData.sku,
+                variantData.productTitle,
+                variantData.variantTitle,
+                barcode,
+                quantity.toString()
+            ].map(s => `"${(s || "").replace(/"/g, '""')}"`).join(","));
         }
     }
 
@@ -164,6 +194,28 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     for (const [productId, data] of productTotalInventoryData.entries()) {
         if (data.totalProjected <= 0) {
             productsToArchive.push(productId);
+        }
+    }
+
+    // 6.5 Safely Activate Missing Items First
+    if (variantsToActivate.length > 0) {
+        console.log(`Activating ${variantsToActivate.length} unassigned items at location...`);
+        for (const itemId of variantsToActivate) {
+            try {
+                await admin.graphql(
+                    `#graphql
+                    mutation inventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
+                      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+                        userErrors { field message }
+                      }
+                    }`,
+                    { variables: { inventoryItemId: itemId, locationId } }
+                );
+            } catch (err: any) {
+                console.error("Warning: Failed to activate item", itemId, err?.message);
+            }
+            // Throttle to replenish bucket points
+            await new Promise(resolve => setTimeout(resolve, 250));
         }
     }
 
@@ -178,21 +230,37 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 quantity: m.quantity
             }));
 
-            await admin.graphql(
-                `#graphql
-                mutation inventorySetOnHandQuantities($input: InventorySetOnHandQuantitiesInput!) {
-                inventorySetOnHandQuantities(input: $input) {
-                    userErrors { field message }
+            try {
+                const response = await admin.graphql(
+                    `#graphql
+                    mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+                      inventorySetQuantities(input: $input) {
+                        userErrors { field message }
+                      }
+                    }`,
+                    { variables: { input: { name: "available", reason: "correction", ignoreCompareQuantity: true, quantities: setQuantities } } }
+                );
+
+                const responseData = await response.json();
+                if (responseData.errors) {
+                    console.error("GraphQL system error updating inventory:", JSON.stringify(responseData.errors));
                 }
-                }`,
-                { variables: { input: { reason: "correction", setQuantities } } }
-            );
+                if (responseData.data?.inventorySetQuantities?.userErrors?.length > 0) {
+                    const uErrors = responseData.data.inventorySetQuantities.userErrors;
+                    console.error("GraphQL userErrors updating inventory:", JSON.stringify(uErrors));
+                }
+            } catch (err: any) {
+                console.error("Exception updating inventory chunk:", err?.message);
+            }
 
             processedItems += chunk.length;
             await prisma.syncRun.update({
                 where: { id: syncRun.id },
                 data: { processedItems }
             });
+
+            // Avoid Shopify API rate limiting by waiting 2 seconds (100 points replenished)
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
     } else {
         await prisma.syncRun.update({
@@ -205,7 +273,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     if (productsToArchive.length > 0) {
         console.log(`Archiving ${productsToArchive.length} products...`);
         for (const productId of productsToArchive) {
-            await admin.graphql(
+            const pResponse = await admin.graphql(
                 `#graphql
                 mutation productUpdate($input: ProductInput!) {
                     productUpdate(input: $input) {
@@ -214,16 +282,32 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 }`,
                 { variables: { input: { id: productId, status: "ARCHIVED" } } }
             );
+
+            const pData = await pResponse.json();
+            if (pData.errors) {
+                console.error("GraphQL system error archiving product:", JSON.stringify(pData.errors));
+                throw new Error("Shopify GraphQL system error archiving product " + productId + ": " + pData.errors[0].message);
+            }
+            if (pData.data?.productUpdate?.userErrors?.length > 0) {
+                const pErrors = pData.data.productUpdate.userErrors;
+                console.error("GraphQL userErrors archiving:", JSON.stringify(pErrors));
+                throw new Error("Shopify API rejected product archive: " + pErrors.map((e: any) => e.message).join(", "));
+            }
+
+            // Avoid Shopify API rate limiting by waiting 250ms
+            await new Promise(resolve => setTimeout(resolve, 250));
         }
     }
 
     // Finish
+    const csvContent = reportRows.join("\n");
     await prisma.syncRun.update({
         where: { id: syncRun.id },
         data: {
              status: "COMPLETED",
              completedAt: new Date(),
-             processedItems: sheetRows.length // Final set
+             processedItems: sheetRows.length, // Final set
+             reportData: csvContent
         }
     });
 
@@ -235,12 +319,14 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     console.log(`Sync completed for shop: ${shop}`);
   } catch (error: any) {
     console.error("Sync failed:", error);
+    const csvContent = reportRows.join("\n");
     await prisma.syncRun.update({
         where: { id: syncRun.id },
         data: {
             status: "ERROR",
             completedAt: new Date(),
-            errorMessage: error.message
+            errorMessage: error.message,
+            reportData: csvContent
         }
     });
   }
