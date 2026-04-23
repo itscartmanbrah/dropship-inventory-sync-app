@@ -48,7 +48,7 @@
     "@shopify/app": "^3.58.2",
     "@shopify/cli": "^3.92.1",
     "@types/eslint": "^9.6.1",
-    "@types/node": "^22.2.0",
+    "@types/node": "^25.5.2",
     "@types/node-cron": "^3.0.11",
     "@types/react": "^18.2.31",
     "@types/react-dom": "^18.2.14",
