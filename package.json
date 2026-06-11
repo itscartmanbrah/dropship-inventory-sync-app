@@ -46,7 +46,7 @@
     "@remix-run/route-config": "^2.16.1",
     "@shopify/api-codegen-preset": "^1.1.1",
     "@shopify/app": "^3.58.2",
-    "@shopify/cli": "^3.92.1",
+    "@shopify/cli": "^4.1.0",
     "@types/eslint": "^9.6.1",
     "@types/node": "^22.2.0",
     "@types/node-cron": "^3.0.11",
