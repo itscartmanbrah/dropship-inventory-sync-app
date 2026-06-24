@@ -299,25 +299,27 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     if (productsToArchive.length > 0) {
         console.log(`Archiving ${productsToArchive.length} products...`);
         for (const productId of productsToArchive) {
-            const pResponse = await retryGraphql(admin,
-                `#graphql
-                mutation productUpdate($input: ProductInput!) {
-                    productUpdate(input: $input) {
-                        userErrors { field message}
-                    }
-                }`,
-                { variables: { input: { id: productId, status: "ARCHIVED" } } }
-            );
+            try {
+                const pResponse = await retryGraphql(admin,
+                    `#graphql
+                    mutation productUpdate($input: ProductInput!) {
+                        productUpdate(input: $input) {
+                            userErrors { field message}
+                        }
+                    }`,
+                    { variables: { input: { id: productId, status: "ARCHIVED" } } }
+                );
 
-            const pData = await pResponse.json();
-            if (pData.errors) {
-                console.error("GraphQL system error archiving product:", JSON.stringify(pData.errors));
-                throw new Error("Shopify GraphQL system error archiving product " + productId + ": " + pData.errors[0].message);
-            }
-            if (pData.data?.productUpdate?.userErrors?.length > 0) {
-                const pErrors = pData.data.productUpdate.userErrors;
-                console.error("GraphQL userErrors archiving:", JSON.stringify(pErrors));
-                throw new Error("Shopify API rejected product archive: " + pErrors.map((e: any) => e.message).join(", "));
+                const pData = await pResponse.json();
+                if (pData.errors) {
+                    console.error("GraphQL system error archiving product:", productId, JSON.stringify(pData.errors));
+                }
+                if (pData.data?.productUpdate?.userErrors?.length > 0) {
+                    const pErrors = pData.data.productUpdate.userErrors;
+                    console.error(`Skipping archive for product ${productId}:`, pErrors.map((e: any) => e.message).join(", "));
+                }
+            } catch (err: any) {
+                console.error(`Warning: Failed to archive product ${productId}:`, err?.message);
             }
 
             // Avoid Shopify API rate limiting by waiting 250ms
