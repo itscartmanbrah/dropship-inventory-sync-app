@@ -133,6 +133,14 @@ export default function Index() {
       return () => clearInterval(interval);
   }, []);
 
+  // After a successful settings save, collapse the service-account editor
+  // back to the masked view so the secret JSON isn't left on screen.
+  useEffect(() => {
+    if (actionData?.success && serviceJson) {
+      setIsEditingServiceAccount(false);
+    }
+  }, [actionData]);
+
   const handleSyncNow = () => {
     const formData = new FormData();
     formData.append("intent", "syncNow");
