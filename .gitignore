@@ -14,6 +14,13 @@ database.sqlite
 .env
 .env.*
 
+# Google service account / credential files - never commit secrets
+*service-account*.json
+shopify-inventory-sync-*.json
+*-credentials.json
+*.pem
+*.key
+
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
