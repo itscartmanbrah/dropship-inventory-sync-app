@@ -10,7 +10,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     return new Response("Missing ID", { status: 400 });
   }
 
-  const syncRun = await prisma.syncRun.findUnique({
+  const syncRun = await prisma.syncRun.findFirst({
     where: { id, shop: session.shop }
   });
 
