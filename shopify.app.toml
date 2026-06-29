@@ -2,7 +2,7 @@
 
 client_id = "8f460aa43fc2d7cf7d329831ba5ff3bc"
 name = "dropship-inventory-sync"
-application_url = "https://159-223-96-29.nip.io"
+application_url = "https://dropship.burrowsjewellers.com.au"
 embedded = true
 
 [build]
@@ -24,4 +24,4 @@ api_version = "2025-01"
 scopes = "write_products,read_products,write_inventory,read_inventory,read_locations"
 
 [auth]
-redirect_urls = [ "https://159-223-96-29.nip.io/api/auth/callback", "https://159-223-96-29.nip.io/api/auth/offline" ]
+redirect_urls = [ "https://dropship.burrowsjewellers.com.au/api/auth/callback", "https://dropship.burrowsjewellers.com.au/api/auth/offline" ]
