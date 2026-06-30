@@ -2,16 +2,24 @@ import { unauthenticated } from '../shopify.server';
 import prisma from '../db.server';
 import { fetchSheetData } from './googleSheets.server';
 
-// Retry wrapper for Shopify GraphQL calls to handle transient 500/502 errors
-async function retryGraphql(admin: any, query: string, variables: any, maxRetries = 3): Promise<any> {
+// Resilient wrapper for Shopify Admin GraphQL calls. Fetches a fresh admin
+// client (latest stored token) per call, and on a 401 from a rotated offline
+// token it re-fetches the client and retries. Also backs off on transient 5xx.
+async function retryGraphql(shop: string, query: string, options: any, maxRetries = 6): Promise<any> {
+  let admin = (await unauthenticated.admin(shop)).admin;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await admin.graphql(query, variables);
+      return await admin.graphql(query, options);
     } catch (err: any) {
-      const statusCode = err?.response?.code || err?.response?.statusCode;
+      const statusCode = err?.response?.code || err?.response?.statusCode || err?.response?.status;
+      const isAuth = statusCode === 401 || /unauthorized|401/i.test(String(err?.message || ""));
       const isTransient = statusCode === 500 || statusCode === 502 || statusCode === 503;
-      
-      if (isTransient && attempt < maxRetries) {
+
+      if (isAuth && attempt < maxRetries) {
+        // Offline token rotated mid-run — re-fetch the admin client and retry.
+        admin = (await unauthenticated.admin(shop)).admin;
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } else if (isTransient && attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
         console.warn(`Shopify API returned ${statusCode}, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -57,8 +65,8 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         data: { totalItems: sheetRows.length }
     });
 
-    // 3. Authenticate with Shopify API Offline
-    const { admin } = await unauthenticated.admin(shop);
+    // 3. Admin client is created per-call inside retryGraphql, so it always uses
+    //    the latest token and survives offline-token rotation mid-run.
 
     // 4. Get Target Location ID
     const locationId = settings.locationId;
@@ -83,7 +91,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     }>();
 
     while (hasNextPage) {
-        const productsResponse = await retryGraphql(admin,
+        const productsResponse = await retryGraphql(shop,
         `#graphql
         query getVariants($cursor: String) {
             productVariants(first: 250, after: $cursor) {
@@ -233,7 +241,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         console.log(`Activating ${variantsToActivate.length} unassigned items at location...`);
         for (const itemId of variantsToActivate) {
             try {
-                await retryGraphql(admin,
+                await retryGraphql(shop,
                     `#graphql
                     mutation inventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
                       inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
@@ -262,7 +270,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
             }));
 
             try {
-                const response = await retryGraphql(admin,
+                const response = await retryGraphql(shop,
                     `#graphql
                     mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
                       inventorySetQuantities(input: $input) {
@@ -300,7 +308,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         console.log(`Archiving ${productsToArchive.length} products...`);
         for (const productId of productsToArchive) {
             try {
-                const pResponse = await retryGraphql(admin,
+                const pResponse = await retryGraphql(shop,
                     `#graphql
                     mutation productUpdate($input: ProductInput!) {
                         productUpdate(input: $input) {
@@ -333,7 +341,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
         for (const productId of updatedProductIds) {
             try {
                 // Fetch current tags for this product
-                const tagResponse = await retryGraphql(admin,
+                const tagResponse = await retryGraphql(shop,
                     `#graphql
                     query getProductTags($id: ID!) {
                         product(id: $id) {
@@ -348,7 +356,7 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
                 // Only add the tag if it's not already present
                 if (!currentTags.includes("Dropship Inventory Updated")) {
                     const newTags = [...currentTags, "Dropship Inventory Updated"];
-                    await retryGraphql(admin,
+                    await retryGraphql(shop,
                         `#graphql
                         mutation productUpdate($input: ProductInput!) {
                             productUpdate(input: $input) {
