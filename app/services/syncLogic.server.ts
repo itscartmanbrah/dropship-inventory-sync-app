@@ -506,36 +506,55 @@ export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MA
 
     await prisma.syncRun.update({ where: { id: syncRun.id }, data: { totalItems: toUpdateCount } });
 
-    // Apply updates one product at a time (productVariantsBulkUpdate is per-product).
-    let processed = 0;
-    for (const [productId, variants] of updatesByProduct.entries()) {
-      try {
-        const r = await retryGraphql(admin,
-          `#graphql
-          mutation bulkPriceUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-              userErrors { field message }
-            }
-          }`,
-          { variables: { productId, variants } }
-        );
-        const rd = await r.json();
-        if (rd.errors) {
-          console.error("Price GraphQL system error:", productId, JSON.stringify(rd.errors));
+    // Apply updates with limited concurrency (productVariantsBulkUpdate is
+    // per-product). Parallelising keeps large first-time runs fast, while the
+    // throttle-aware retry below stays within Shopify's API rate limit.
+    const priceMutation = `#graphql
+      mutation bulkPriceUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          userErrors { field message }
         }
-        const ue = rd.data?.productVariantsBulkUpdate?.userErrors;
-        if (ue?.length > 0) {
-          console.error("Price userErrors:", productId, JSON.stringify(ue));
-        }
-      } catch (e: any) {
-        console.error("Price update failed for product", productId, e?.message);
-      }
+      }`;
 
-      processed += variants.length;
-      await prisma.syncRun.update({ where: { id: syncRun.id }, data: { processedItems: processed } });
-      // Throttle to stay under Shopify's API rate limit.
-      await new Promise(res => setTimeout(res, 250));
-    }
+    const applyOne = async (productId: string, variants: { id: string; price: string; compareAtPrice: null }[]) => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          const r = await admin.graphql(priceMutation, { variables: { productId, variants } });
+          const rd = await r.json();
+          const throttled = rd.errors?.some((e: any) => e?.extensions?.code === "THROTTLED");
+          if (throttled && attempt < 5) {
+            await new Promise(res => setTimeout(res, 2000)); // back off, then retry
+            continue;
+          }
+          if (rd.errors) console.error("Price GraphQL error:", productId, JSON.stringify(rd.errors));
+          const ue = rd.data?.productVariantsBulkUpdate?.userErrors;
+          if (ue?.length > 0) console.error("Price userErrors:", productId, JSON.stringify(ue));
+          return;
+        } catch (e: any) {
+          if (attempt < 5) { await new Promise(res => setTimeout(res, attempt * 1000)); continue; }
+          console.error("Price update failed for product", productId, e?.message);
+          return;
+        }
+      }
+    };
+
+    const entries = Array.from(updatesByProduct.entries());
+    let processed = 0;
+    let nextIdx = 0;
+    const CONCURRENCY = 6;
+    const worker = async () => {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= entries.length) return;
+        const [productId, variants] = entries[i];
+        await applyOne(productId, variants);
+        processed += variants.length;
+        if (processed % 20 === 0) {
+          await prisma.syncRun.update({ where: { id: syncRun.id }, data: { processedItems: processed } });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
     const secs = ((Date.now() - startMs) / 1000).toFixed(1);
     await prisma.syncRun.update({
