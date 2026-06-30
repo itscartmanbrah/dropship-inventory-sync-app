@@ -15,7 +15,8 @@ import {
   Text,
   ProgressBar,
   IndexTable,
-  Badge
+  Badge,
+  InlineStack
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
@@ -200,6 +201,16 @@ export default function Index() {
   return (
     <Page title="Settings">
       <BlockStack gap="500">
+        <InlineStack gap="300" blockAlign="center">
+          <img
+            src="/logo.png"
+            alt="Burrows Jewellers"
+            width={48}
+            height={48}
+            style={{ display: "block" }}
+          />
+          <Text as="h1" variant="headingLg">Burrows Jewellers</Text>
+        </InlineStack>
         <Layout>
           <Layout.Section>
             {actionData?.message && (
