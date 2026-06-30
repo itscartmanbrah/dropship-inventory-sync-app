@@ -446,7 +446,40 @@ export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MA
       rrpByBarcode.set(String(rawBarcode).trim(), rrp);
     }
 
-    const { admin } = await unauthenticated.admin(shop);
+    // Offline access tokens can rotate mid-run (e.g. while the embedded app is
+    // open and refreshing its token), invalidating a long-held admin client and
+    // returning 401. This wrapper re-fetches the admin client on a 401 (picking
+    // up the freshly stored token) and retries; it also backs off on throttling.
+    let adminClient = (await unauthenticated.admin(shop)).admin;
+    const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+    const isAuthError = (e: any) =>
+      e?.response?.status === 401 || e?.response?.code === 401 || /unauthorized|401/i.test(String(e?.message || ""));
+    const gql = async (query: string, variables: any): Promise<any> => {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          const r = await adminClient.graphql(query, { variables });
+          const rd = await r.json();
+          if (rd.errors?.some((e: any) => e?.extensions?.code === "THROTTLED") && attempt < 6) {
+            await sleep(2000);
+            continue;
+          }
+          return rd;
+        } catch (e: any) {
+          if (isAuthError(e) && attempt < 6) {
+            adminClient = (await unauthenticated.admin(shop)).admin; // refresh rotated token
+            await sleep(300);
+            continue;
+          }
+          const code = e?.response?.code || e?.response?.status;
+          if ((code === 500 || code === 502 || code === 503) && attempt < 6) {
+            await sleep(attempt * 1000);
+            continue;
+          }
+          if (attempt < 6) { await sleep(attempt * 800); continue; }
+          throw e;
+        }
+      }
+    };
 
     // Scan all variants; queue only those that actually need correcting.
     let hasNextPage = true;
@@ -455,7 +488,7 @@ export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MA
     let toUpdateCount = 0;
 
     while (hasNextPage) {
-      const resp = await retryGraphql(admin,
+      const data = await gql(
         `#graphql
         query getVariantPrices($cursor: String) {
           productVariants(first: 250, after: $cursor) {
@@ -473,10 +506,8 @@ export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MA
             }
           }
         }`,
-        { variables: { cursor } }
+        { cursor }
       );
-
-      const data = await resp.json();
       const list = data.data.productVariants;
 
       for (const edge of list.edges) {
@@ -517,24 +548,13 @@ export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MA
       }`;
 
     const applyOne = async (productId: string, variants: { id: string; price: string; compareAtPrice: null }[]) => {
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-          const r = await admin.graphql(priceMutation, { variables: { productId, variants } });
-          const rd = await r.json();
-          const throttled = rd.errors?.some((e: any) => e?.extensions?.code === "THROTTLED");
-          if (throttled && attempt < 5) {
-            await new Promise(res => setTimeout(res, 2000)); // back off, then retry
-            continue;
-          }
-          if (rd.errors) console.error("Price GraphQL error:", productId, JSON.stringify(rd.errors));
-          const ue = rd.data?.productVariantsBulkUpdate?.userErrors;
-          if (ue?.length > 0) console.error("Price userErrors:", productId, JSON.stringify(ue));
-          return;
-        } catch (e: any) {
-          if (attempt < 5) { await new Promise(res => setTimeout(res, attempt * 1000)); continue; }
-          console.error("Price update failed for product", productId, e?.message);
-          return;
-        }
+      try {
+        const rd = await gql(priceMutation, { productId, variants });
+        if (rd.errors) console.error("Price GraphQL error:", productId, JSON.stringify(rd.errors));
+        const ue = rd.data?.productVariantsBulkUpdate?.userErrors;
+        if (ue?.length > 0) console.error("Price userErrors:", productId, JSON.stringify(ue));
+      } catch (e: any) {
+        console.error("Price update failed for product", productId, e?.message);
       }
     };
 
