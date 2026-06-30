@@ -20,7 +20,7 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { runSyncForShop } from "../services/syncLogic.server";
+import { runSyncForShop, runPriceSyncForShop } from "../services/syncLogic.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
@@ -76,10 +76,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch (error: any) {
       return json({ success: false, message: error.message || "Failed to trigger sync" });
     }
+  } else if (intent === "priceSyncNow") {
+    try {
+      // Fire-and-forget so the UI returns immediately.
+      runPriceSyncForShop(shop, "PRICE_MANUAL").catch((err) => console.error("Background price sync error:", err));
+      return json({ success: true, message: "Price sync started in the background! Watch the progress below." });
+    } catch (error: any) {
+      return json({ success: false, message: error.message || "Failed to trigger price sync" });
+    }
   } else if (intent === "saveSettings") {
     const googleSheetId = formData.get("googleSheetId") as string;
     const googleServiceAccount = formData.get("googleServiceAccount") as string;
     const isActive = formData.get("isActive") === "true";
+    const priceSyncEnabled = formData.get("priceSyncEnabled") === "true";
     const syncIntervalHours = parseInt(formData.get("syncIntervalHours") as string, 10) || 24;
     const locationId = formData.get("locationId") as string;
 
@@ -89,6 +98,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         googleSheetId,
         googleServiceAccount,
         isActive,
+        priceSyncEnabled,
         syncIntervalHours,
         locationId,
       },
@@ -108,12 +118,14 @@ export default function Index() {
 
   const isSaving = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveSettings";
   const isSyncing = navigation.state === "submitting" && navigation.formData?.get("intent") === "syncNow";
+  const isPriceSyncing = navigation.state === "submitting" && navigation.formData?.get("intent") === "priceSyncNow";
 
   const [sheetId, setSheetId] = useState(settings?.googleSheetId || "");
   const [serviceJson, setServiceJson] = useState(settings?.googleServiceAccount || "");
   const [intervalOption, setIntervalOption] = useState((settings?.syncIntervalHours || 24).toString());
   const [locationId, setLocationId] = useState(settings?.locationId || (locations[0]?.value ?? ""));
   const [isActive, setIsActive] = useState(settings?.isActive || false);
+  const [priceSyncEnabled, setPriceSyncEnabled] = useState(settings?.priceSyncEnabled || false);
   const [isEditingServiceAccount, setIsEditingServiceAccount] = useState(!settings?.googleServiceAccount);
 
   const [activeRun, setActiveRun] = useState<any>(syncRuns[0] || null);
@@ -145,6 +157,12 @@ export default function Index() {
   const handleSyncNow = () => {
     const formData = new FormData();
     formData.append("intent", "syncNow");
+    submit(formData, { method: "post" });
+  };
+
+  const handlePriceSyncNow = () => {
+    const formData = new FormData();
+    formData.append("intent", "priceSyncNow");
     submit(formData, { method: "post" });
   };
 
@@ -225,6 +243,7 @@ export default function Index() {
               <Form method="post">
                 <input type="hidden" name="intent" value="saveSettings" />
                 <input type="hidden" name="isActive" value={isActive ? "true" : "false"} />
+                <input type="hidden" name="priceSyncEnabled" value={priceSyncEnabled ? "true" : "false"} />
                 <BlockStack gap="400">
                   <TextField
                     label="Google Sheet ID"
@@ -290,6 +309,13 @@ export default function Index() {
                     onChange={setIsActive}
                   />
 
+                  <Checkbox
+                    label="Enable Automatic Price Sync (RRP, every 15 minutes)"
+                    helpText="Keeps dropship items priced at the Google Sheet RRP (column G) and clears any sale price, so they aren't sold at in-store discounts."
+                    checked={priceSyncEnabled}
+                    onChange={setPriceSyncEnabled}
+                  />
+
                   <Button submit variant="primary" loading={isSaving}>
                     Save Settings
                   </Button>
@@ -330,6 +356,15 @@ export default function Index() {
                     {settings?.lastSyncTime && (
                     <p style={{ marginTop: '1rem', color: 'gray' }}>
                         Last Sync: {new Date(settings.lastSyncTime).toLocaleString()}
+                    </p>
+                    )}
+
+                    <Button onClick={handlePriceSyncNow} loading={isPriceSyncing} fullWidth>
+                    Force Price Sync Now
+                    </Button>
+                    {settings?.lastPriceSyncTime && (
+                    <p style={{ color: 'gray' }}>
+                        Last Price Sync: {new Date(settings.lastPriceSyncTime).toLocaleString()}
                     </p>
                     )}
                 </BlockStack>

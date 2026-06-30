@@ -42,6 +42,8 @@ model Settings {
   lastSyncTime         DateTime?
   isActive             Boolean   @default(false)
   locationId           String?
+  priceSyncEnabled     Boolean   @default(false)
+  lastPriceSyncTime    DateTime?
 }
 
 model SyncRun {

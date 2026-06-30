@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import prisma from '../db.server';
-import { runSyncForShop } from './syncLogic.server';
+import { runSyncForShop, runPriceSyncForShop } from './syncLogic.server';
 
 // Keep track if we already started the scheduler to avoid double-starting in dev mode
 let started = false;
@@ -47,6 +47,29 @@ export function startScheduler() {
       }
     } catch (err) {
       console.error("Error in cron scheduler:", err);
+    }
+  });
+
+  // Price sync: every 15 minutes, re-apply the Google Sheet RRP for shops that
+  // have price sync enabled. Kept separate from the (heavier) inventory sync so
+  // it can run frequently and quickly correct prices overwritten by Retail Edge.
+  cron.schedule('*/15 * * * *', async () => {
+    console.log("Running scheduled PRICE sync check...");
+
+    try {
+      const shops = await prisma.settings.findMany({
+        where: { priceSyncEnabled: true }
+      });
+
+      for (const settings of shops) {
+        try {
+          await runPriceSyncForShop(settings.shop, "PRICE_AUTO");
+        } catch (e) {
+          console.error(`Failed scheduled price sync for shop ${settings.shop}`, e);
+        }
+      }
+    } catch (err) {
+      console.error("Error in price cron scheduler:", err);
     }
   });
 }

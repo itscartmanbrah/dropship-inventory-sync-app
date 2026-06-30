@@ -398,3 +398,159 @@ export async function runSyncForShop(shop: string, type: string = "MANUAL") {
     });
   }
 }
+
+// Guard against overlapping price-sync runs for the same shop (the 15-min
+// scheduler could otherwise fire again while a slow run is still in progress).
+const priceSyncInFlight = new Set<string>();
+
+/**
+ * Lightweight, frequent price sync. For every variant matched by barcode in the
+ * Google Sheet, set the Shopify selling price to the sheet's RRP (column G) and
+ * clear any "compare at" (sale) price. Diff-based: only variants whose price
+ * differs from the RRP (or that still have a compare-at price) are updated, so
+ * routine runs only re-correct the few items Retail Edge recently discounted.
+ */
+export async function runPriceSyncForShop(shop: string, type: string = "PRICE_MANUAL") {
+  if (priceSyncInFlight.has(shop)) {
+    console.log(`Price sync already running for ${shop}; skipping this trigger.`);
+    return;
+  }
+  priceSyncInFlight.add(shop);
+  const startMs = Date.now();
+  console.log(`Starting PRICE sync for shop: ${shop}`);
+
+  const syncRun = await prisma.syncRun.create({
+    data: { shop, type, status: "IN_PROGRESS", totalItems: 0, processedItems: 0 },
+  });
+
+  const reportRows: string[] = [];
+  reportRows.push(["SKU", "Product Title", "Variant Title", "Barcode", "Price Before", "Price After (RRP)", "Compare-At Cleared"].map(s => `"${s}"`).join(","));
+
+  try {
+    const settings = await prisma.settings.findUnique({ where: { shop } });
+    if (!settings || !settings.googleSheetId || !settings.googleServiceAccount) {
+      throw new Error("Missing Google Sheet ID or Service Account JSON. Please save your settings first.");
+    }
+
+    const sheetRows = await fetchSheetData(settings.googleSheetId, settings.googleServiceAccount);
+
+    // Build barcode -> RRP, skipping blank / zero values so we never zero a price.
+    const rrpByBarcode = new Map<string, number>();
+    for (const row of sheetRows) {
+      const rawBarcode = row['Variant Barcode'] || row['Barcode'];
+      if (!rawBarcode) continue;
+      const rrpRaw = row['RRP'];
+      if (rrpRaw === undefined || rrpRaw === null || String(rrpRaw).trim() === "") continue;
+      const rrp = parseFloat(String(rrpRaw).replace(/[^0-9.]/g, ""));
+      if (!rrp || rrp <= 0) continue;
+      rrpByBarcode.set(String(rawBarcode).trim(), rrp);
+    }
+
+    const { admin } = await unauthenticated.admin(shop);
+
+    // Scan all variants; queue only those that actually need correcting.
+    let hasNextPage = true;
+    let cursor: string | null = null;
+    const updatesByProduct = new Map<string, { id: string; price: string; compareAtPrice: null }[]>();
+    let toUpdateCount = 0;
+
+    while (hasNextPage) {
+      const resp = await retryGraphql(admin,
+        `#graphql
+        query getVariantPrices($cursor: String) {
+          productVariants(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id
+                sku
+                title
+                barcode
+                price
+                compareAtPrice
+                product { id title }
+              }
+            }
+          }
+        }`,
+        { variables: { cursor } }
+      );
+
+      const data = await resp.json();
+      const list = data.data.productVariants;
+
+      for (const edge of list.edges) {
+        const n = edge.node;
+        if (!n.barcode) continue;
+        const rrp = rrpByBarcode.get(String(n.barcode).trim());
+        if (rrp === undefined) continue;
+
+        const rrpStr = rrp.toFixed(2);
+        const priceDiffers = parseFloat(n.price).toFixed(2) !== rrpStr;
+        const hasCompareAt = n.compareAtPrice !== null && n.compareAtPrice !== undefined;
+
+        if (priceDiffers || hasCompareAt) {
+          const arr = updatesByProduct.get(n.product.id) || [];
+          arr.push({ id: n.id, price: rrpStr, compareAtPrice: null });
+          updatesByProduct.set(n.product.id, arr);
+          toUpdateCount++;
+          reportRows.push([
+            n.sku || "", n.product.title || "", n.title || "", n.barcode, n.price, rrpStr, hasCompareAt ? "yes" : "no"
+          ].map(s => `"${String(s ?? "").replace(/"/g, '""')}"`).join(","));
+        }
+      }
+
+      hasNextPage = list.pageInfo.hasNextPage;
+      cursor = list.pageInfo.endCursor;
+    }
+
+    await prisma.syncRun.update({ where: { id: syncRun.id }, data: { totalItems: toUpdateCount } });
+
+    // Apply updates one product at a time (productVariantsBulkUpdate is per-product).
+    let processed = 0;
+    for (const [productId, variants] of updatesByProduct.entries()) {
+      try {
+        const r = await retryGraphql(admin,
+          `#graphql
+          mutation bulkPriceUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              userErrors { field message }
+            }
+          }`,
+          { variables: { productId, variants } }
+        );
+        const rd = await r.json();
+        if (rd.errors) {
+          console.error("Price GraphQL system error:", productId, JSON.stringify(rd.errors));
+        }
+        const ue = rd.data?.productVariantsBulkUpdate?.userErrors;
+        if (ue?.length > 0) {
+          console.error("Price userErrors:", productId, JSON.stringify(ue));
+        }
+      } catch (e: any) {
+        console.error("Price update failed for product", productId, e?.message);
+      }
+
+      processed += variants.length;
+      await prisma.syncRun.update({ where: { id: syncRun.id }, data: { processedItems: processed } });
+      // Throttle to stay under Shopify's API rate limit.
+      await new Promise(res => setTimeout(res, 250));
+    }
+
+    const secs = ((Date.now() - startMs) / 1000).toFixed(1);
+    await prisma.syncRun.update({
+      where: { id: syncRun.id },
+      data: { status: "COMPLETED", completedAt: new Date(), processedItems: processed, reportData: reportRows.join("\n") },
+    });
+    await prisma.settings.update({ where: { shop }, data: { lastPriceSyncTime: new Date() } });
+    console.log(`PRICE sync completed for ${shop}: ${processed} variants updated in ${secs}s`);
+  } catch (error: any) {
+    console.error("Price sync failed:", error);
+    await prisma.syncRun.update({
+      where: { id: syncRun.id },
+      data: { status: "ERROR", completedAt: new Date(), errorMessage: error.message, reportData: reportRows.join("\n") },
+    });
+  } finally {
+    priceSyncInFlight.delete(shop);
+  }
+}
